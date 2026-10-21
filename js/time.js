@@ -70,13 +70,14 @@ export function classifySaturday(record) {
   return record?.saturdayType || null;
 }
 
-export function calculateDay(record, date, holiday) {
+export function calculateDay(record, date, holiday, settings = {}) {
   const real = realWorkedMinutes(record);
   const reference = effectiveReferenceMinutes(record);
   const hasWork = real > 0;
   const sunday = isSunday(date);
   const saturday = isSaturday(date);
   const holidayWorked = !!holiday && hasWork;
+  const feriadoExcesoGeneraFranco = settings.feriadoExcesoGeneraFranco ?? CONFIG.FERIADO_EXCESO_GENERA_FRANCO;
 
   let required = CONFIG.JORNAL_NORMAL_HORAS * 60;
   let counted = 0;
@@ -97,8 +98,10 @@ export function calculateDay(record, date, holiday) {
   } else if (record?.leaveMode === "medio_franco_dia_completo") {
     counted = required;
   } else if (sunday || holidayWorked) {
-    counted = Math.min(reference, required);
-    extra100 = Math.max(0, reference - required);
+    // DOMINGOS Y FERIADOS: toda la jornada efectivamente trabajada
+    // se clasifica al 100 %. No se descuenta primero un jornal de 8 h.
+    counted = required;
+    extra100 = reference;
   } else if (saturday) {
     const type = record?.saturdayType || "provisional";
     if (type === "voluntario") {
@@ -141,6 +144,7 @@ export function calculateDay(record, date, holiday) {
     sunday,
     saturday,
     holidayWorked,
+    feriadoExcesoGeneraFranco,
     leaveMode,
     saturdayType: record?.saturdayType || null
   };

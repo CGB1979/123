@@ -73,4 +73,5 @@ export const MESES = [
 ];
 
 // Por defecto: NO. Puede activarse desde la configuración.
+export const VERSION_APP = "1.0.5";
 export const FERIADO_EXCESO_GENERA_FRANCO = false;

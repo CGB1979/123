@@ -1,4 +1,4 @@
-import { CONFIG, MESES } from "./config.js";
+import { CONFIG, MESES, VERSION_APP } from "./config.js";
 import { loadState, saveState, addAudit, exportState, importState } from "./storage.js";
 import { isoDate, calculateDay, minutesFromTime, timeFromMinutes, suggestLateOrShift } from "./time.js";
 import { getHolidays, updateExternalHolidays } from "./holidays.js";
@@ -69,7 +69,7 @@ function openDayModal(dateKey) {
   const holiday = getHolidays(state, date.getFullYear())[dateKey];
   const record = state.records[dateKey] || { punches: [], saturdayType: null, leaveMode: null, lateDecision: null, needsReview: false };
   state.records[dateKey] = record;
-  const calc = calculateDay(record, date, holiday);
+  const calc = calculateDay(record, date, holiday, state.settings);
   syncGeneratedForDay(state, dateKey, calc);
   save();
 
@@ -376,6 +376,7 @@ function renderSettings() {
       <div class="cl-form-group"><label>Tolerancia (minutos)</label><input id="cl-setting-tolerance" class="cl-input" type="number" min="0" value="${CONFIG.TOLERANCIA_MINUTOS}"></div>
       <div class="cl-form-group"><label>Redondeo de entrada</label><select id="cl-setting-round-in" class="cl-input"><option value="ninguno">Sin redondeo</option><option value="abajo">Abajo</option><option value="arriba">Arriba</option><option value="cercano">Más cercano</option></select></div>
       <div class="cl-form-group"><label>Redondeo de salida</label><select id="cl-setting-round-out" class="cl-input"><option value="ninguno">Sin redondeo</option><option value="abajo">Abajo</option><option value="arriba">Arriba</option><option value="cercano">Más cercano</option></select></div>
+      <div class="cl-form-group"><label>Feriado trabajado genera franco si supera 8 h</label><select id="cl-setting-holiday-leave" class="cl-input"><option value="false">No</option><option value="true">Sí</option></select></div>
     </section>
     <section class="cl-card" style="box-shadow:none;margin:0"><h3>Datos</h3>
       <button class="cl-btn cl-btn-outline cl-btn-full" id="cl-export">Exportar respaldo JSON</button>
@@ -387,9 +388,12 @@ function renderSettings() {
   const rOut = document.getElementById("cl-setting-round-out");
   rIn.value = CONFIG.REDONDEO_ENTRADA;
   rOut.value = CONFIG.REDONDEO_SALIDA;
-  rIn.addEventListener("change", e => state.settings.roundIn = e.target.value);
-  rOut.addEventListener("change", e => state.settings.roundOut = e.target.value);
-  document.getElementById("cl-setting-tolerance").addEventListener("change", e => state.settings.tolerance = Number(e.target.value));
+  const holidayLeave = document.getElementById("cl-setting-holiday-leave");
+  holidayLeave.value = String(state.settings.feriadoExcesoGeneraFranco ?? CONFIG.FERIADO_EXCESO_GENERA_FRANCO);
+  rIn.addEventListener("change", e => { state.settings.roundIn = e.target.value; save(); });
+  rOut.addEventListener("change", e => { state.settings.roundOut = e.target.value; save(); });
+  holidayLeave.addEventListener("change", e => { state.settings.feriadoExcesoGeneraFranco = e.target.value === "true"; save(); });
+  document.getElementById("cl-setting-tolerance").addEventListener("change", e => { state.settings.tolerance = Number(e.target.value); save(); });
   document.getElementById("cl-export").addEventListener("click", () => exportState(state));
   document.getElementById("cl-import").addEventListener("change", async e => {
     const file = e.target.files?.[0]; if (!file) return;
@@ -406,10 +410,31 @@ function renderSettings() {
 document.querySelectorAll(".cl-nav-btn").forEach(btn => btn.addEventListener("click", () => { view.screen = btn.dataset.screen; render(); }));
 document.getElementById("btn-settings").addEventListener("click", renderSettings);
 
-// Intento real de actualización solo si se configuró una fuente externa.
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./service-worker.js').catch(error => console.warn('PWA no disponible:', error));
+// Actualización automática de archivos de la aplicación.
+// La versión se guarda separada de los registros: actualizar archivos
+// nunca borra los datos personales guardados en localStorage.
+async function comprobarVersionYActualizar() {
+  const VERSION_KEY = "control_laboral_app_version";
+  const instalada = localStorage.getItem(VERSION_KEY);
+  localStorage.setItem(VERSION_KEY, VERSION_APP);
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.register("./service-worker.js");
+    await registration.update();
+    if (instalada && instalada !== VERSION_APP) sessionStorage.setItem("control_laboral_actualizacion_pendiente", "1");
+  } catch (error) {
+    console.warn("No se pudo comprobar la actualización de la aplicación:", error);
+  }
 }
+
+navigator.serviceWorker?.addEventListener("controllerchange", () => {
+  if (sessionStorage.getItem("control_laboral_actualizacion_pendiente") === "1") {
+    sessionStorage.removeItem("control_laboral_actualizacion_pendiente");
+    window.location.reload();
+  }
+});
+
+comprobarVersionYActualizar();
 updateExternalHolidays(state).then(result => { if (result.updated) { save(); if (view.screen === "calendar") render(); } });
 
 render();

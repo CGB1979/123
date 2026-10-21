@@ -76,7 +76,7 @@ export function syncAllGenerated(state) {
     const [y, m, d] = dateKey.split("-").map(Number);
     const date = new Date(y, m - 1, d);
     const holiday = getHolidays(state, y)[dateKey];
-    const dayCalc = calculateDay(record, date, holiday);
+    const dayCalc = calculateDay(record, date, holiday, state.settings);
     syncGeneratedForDay(state, dateKey, dayCalc);
   }
 }
@@ -91,9 +91,11 @@ export function syncGeneratedForDay(state, dateKey, dayCalc) {
     addAudit(state, "franco_generado", { date: dateKey, reason: "domingo trabajado" });
   }
 
-  if (dayCalc.holidayWorked && !dayCalc.sunday && !state.leaves.fullGenerated.some(x => x.date === dateKey)) {
+  if (dayCalc.holidayWorked && !dayCalc.sunday && dayCalc.feriadoExcesoGeneraFranco &&
+      dayCalc.referenceMinutes > CONFIG.JORNAL_NORMAL_HORAS * 60 &&
+      !state.leaves.fullGenerated.some(x => x.date === dateKey)) {
     state.leaves.fullGenerated.push(newItem("franco", dateKey));
-    addAudit(state, "franco_generado", { date: dateKey, reason: "feriado trabajado" });
+    addAudit(state, "franco_generado", { date: dateKey, reason: "feriado trabajado: supera 8 h y la opción está habilitada" });
   }
 
   if (dayCalc.saturday && record?.saturdayType === "voluntario" &&
