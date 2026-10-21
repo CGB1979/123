@@ -64,6 +64,7 @@ export function effectiveReferenceMinutes(record) {
 export function isSunday(date) { return date.getDay() === 0; }
 export function isSaturday(date) { return date.getDay() === 6; }
 export function iso(date) { return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`; }
+export const isoDate = iso;
 
 export function classifySaturday(record) {
   return record?.saturdayType || null;
