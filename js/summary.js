@@ -72,9 +72,6 @@ export function calculateBillingCycle(state, date = new Date()) {
 }
 
 export function renderSummary(state, date = new Date()) {
-  const { start, end } = billingRange(date);
-  const year = start.getFullYear();
-  const month = start.getMonth();
   const { start, end, totals } = calculateBillingCycle(state, date);
   const leaves = leaveTotals(state);
 
