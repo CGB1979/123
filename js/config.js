@@ -50,7 +50,7 @@ export const CONFIG = {
 
   // Inicio del mes de facturación. 1 = mes calendario.
   // Si luego necesitás, por ejemplo, del 21 al 20, cambiar a 21.
-  DIA_INICIO_FACTURACION: 1,
+  DIA_INICIO_FACTURACION: 25,
 
   // Detección de llegada tarde/cambio de turno.
   MAX_RETRASO_INFERIDO_MINUTOS: 25,

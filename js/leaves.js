@@ -1,4 +1,7 @@
 import { addAudit, saveState } from "./storage.js";
+import { isoDate, calculateDay } from "./time.js";
+import { getHolidays } from "./holidays.js";
+import { CONFIG } from "./config.js";
 
 function newItem(type, date, source = "generado") {
   return {
@@ -12,15 +15,88 @@ function newItem(type, date, source = "generado") {
   };
 }
 
+function billingCycleKey(dateKey) {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const startDay = CONFIG.DIA_INICIO_FACTURACION;
+  const start = new Date(date.getFullYear(), date.getMonth(), startDay);
+  if (date.getDate() < startDay) start.setMonth(start.getMonth() - 1);
+  return isoDate(start);
+}
+
+/**
+ * Clasifica los sábados trabajados dentro de cada ciclo de facturación.
+ * En cada ciclo, los primeros N sábados trabajados son obligatorios y los
+ * siguientes son voluntarios. Una clasificación manual prevalece.
+ */
+export function syncSaturdayClassifications(state) {
+  const groups = new Map();
+
+  for (const [dateKey, record] of Object.entries(state.records || {})) {
+    if (!record?.punches?.length) continue;
+    const [y, m, d] = dateKey.split("-").map(Number);
+    const date = new Date(y, m - 1, d);
+    if (date.getDay() !== 6) continue;
+
+    const cycle = billingCycleKey(dateKey);
+    if (!groups.has(cycle)) groups.set(cycle, []);
+    groups.get(cycle).push({ dateKey, record });
+  }
+
+  for (const items of groups.values()) {
+    items.sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    let mandatoryCount = 0;
+
+    // Las clasificaciones manuales quedan intactas. Todas las demás se
+    // calculan nuevamente dentro de su ciclo 25 -> 24.
+    for (const item of items) {
+      if (item.record.saturdayClassification === "manual") {
+        if (item.record.saturdayType === "mandatory") mandatoryCount++;
+        continue;
+      }
+      item.record.saturdayType = mandatoryCount < CONFIG.CANTIDAD_SABADOS_OBLIGATORIOS
+        ? "mandatory"
+        : "voluntario";
+      item.record.saturdayClassification = "provisional";
+      if (item.record.saturdayType === "mandatory") mandatoryCount++;
+    }
+  }
+}
+/**
+ * Genera todos los francos/medios que correspondan a los registros existentes.
+ * Es acumulativo: nunca vuelve a crear el mismo beneficio para una fecha.
+ */
+export function syncAllGenerated(state) {
+  syncSaturdayClassifications(state);
+
+  const entries = Object.entries(state.records || {}).sort(([a], [b]) => a.localeCompare(b));
+  for (const [dateKey, record] of entries) {
+    if (!record?.punches?.length) continue;
+
+    const [y, m, d] = dateKey.split("-").map(Number);
+    const date = new Date(y, m - 1, d);
+    const holiday = getHolidays(state, y)[dateKey];
+    const dayCalc = calculateDay(record, date, holiday);
+    syncGeneratedForDay(state, dateKey, dayCalc);
+  }
+}
+
 export function syncGeneratedForDay(state, dateKey, dayCalc) {
   if (!dayCalc.worked) return;
+  const record = state.records[dateKey];
+  if (record?.leaveMode) return;
 
   if (dayCalc.sunday && !state.leaves.fullGenerated.some(x => x.date === dateKey)) {
     state.leaves.fullGenerated.push(newItem("franco", dateKey));
     addAudit(state, "franco_generado", { date: dateKey, reason: "domingo trabajado" });
   }
 
-  if (dayCalc.saturday && dayCalc.worked && dayCalc.saturdayType === "voluntario" &&
+  if (dayCalc.holidayWorked && !dayCalc.sunday && !state.leaves.fullGenerated.some(x => x.date === dateKey)) {
+    state.leaves.fullGenerated.push(newItem("franco", dateKey));
+    addAudit(state, "franco_generado", { date: dateKey, reason: "feriado trabajado" });
+  }
+
+  if (dayCalc.saturday && record?.saturdayType === "voluntario" &&
       !state.leaves.halfGenerated.some(x => x.date === dateKey)) {
     state.leaves.halfGenerated.push(newItem("medio_franco", dateKey));
     addAudit(state, "medio_franco_generado", { date: dateKey, reason: "sábado voluntario trabajado" });
@@ -43,6 +119,7 @@ export function debtFull(state) { return state.leaves.fullDebt.filter(x => x.sta
 export function debtHalf(state) { return state.leaves.halfDebt.filter(x => x.status === "pendiente"); }
 
 export function useFullLeave(state, dateKey) {
+  syncAllGenerated(state);
   const item = oldestAvailable(state.leaves.fullGenerated);
   if (item) {
     item.status = "usado";
@@ -52,7 +129,6 @@ export function useFullLeave(state, dateKey) {
     return { ok: true, source: "disponible" };
   }
 
-  // Se permite pedir el franco adelantado: queda como deuda independiente.
   const debt = newItem("franco", dateKey, "adelantado");
   debt.status = "pendiente";
   state.leaves.fullDebt.push(debt);
@@ -61,6 +137,7 @@ export function useFullLeave(state, dateKey) {
 }
 
 export function useHalfLeave(state, dateKey) {
+  syncAllGenerated(state);
   const item = oldestAvailable(state.leaves.halfGenerated);
   if (item) {
     item.status = "usado";
@@ -70,7 +147,6 @@ export function useHalfLeave(state, dateKey) {
     return { ok: true, source: "disponible" };
   }
 
-  // También se permite pedir un medio franco adelantado.
   const debt = newItem("medio_franco", dateKey, "adelantado");
   debt.status = "pendiente";
   state.leaves.halfDebt.push(debt);
@@ -79,10 +155,9 @@ export function useHalfLeave(state, dateKey) {
 }
 
 export function useThreeHalvesForFullDay(state, dateKey) {
+  syncAllGenerated(state);
   const available = availableHalf(state).sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt));
 
-  // Regla específica confirmada: 3 medios adelantados no cubren un día.
-  // Si hay 2 disponibles y falta solamente 1, sí se permite pedir ese tercero adelantado.
   if (available.length < 2) {
     return {
       ok: false,

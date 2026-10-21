@@ -3,8 +3,8 @@ import { loadState, saveState, addAudit, exportState, importState } from "./stor
 import { isoDate, calculateDay, minutesFromTime, timeFromMinutes, suggestLateOrShift } from "./time.js";
 import { getHolidays, updateExternalHolidays } from "./holidays.js";
 import { renderCalendar, bindCalendar } from "./calendar.js";
-import { renderSummary, calculateMonth, formatHours } from "./summary.js";
-import { syncGeneratedForDay, useFullLeave, useHalfLeave, useThreeHalvesForFullDay, leaveTotals, availableFull, availableHalf, debtFull, debtHalf, markDebtPaid } from "./leaves.js";
+import { renderSummary, calculateMonth, calculateBillingCycle, formatHours } from "./summary.js";
+import { syncAllGenerated, syncSaturdayClassifications, syncGeneratedForDay, useFullLeave, useHalfLeave, useThreeHalvesForFullDay, leaveTotals, availableFull, availableHalf, debtFull, debtHalf, markDebtPaid } from "./leaves.js";
 import { openModal, closeModal, modalHead, escapeHtml, confirmAction } from "./ui.js";
 
 const state = loadState();
@@ -16,25 +16,8 @@ function dateFromKey(key) { const [y,m,d] = key.split("-").map(Number); return n
 function formatDate(key) { return dateFromKey(key).toLocaleDateString("es-AR", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }); }
 function currentTime() { return new Date().toTimeString().slice(0,5); }
 
-function ensureSaturdayClassifications(year, month) {
-  const days = new Date(year, month + 1, 0).getDate();
-  const worked = [];
-  for (let d = 1; d <= days; d++) {
-    const date = new Date(year, month, d);
-    if (date.getDay() !== 6) continue;
-    const key = isoDate(date);
-    const record = state.records[key];
-    if (!record?.punches?.length) continue;
-    worked.push({ key, record });
-  }
-  worked.sort((a,b) => a.key.localeCompare(b.key));
-  let mandatoryCount = worked.filter(x => x.record.saturdayType === "mandatory").length;
-  for (const item of worked) {
-    if (item.record.saturdayType === "mandatory" || item.record.saturdayType === "voluntario") continue;
-    item.record.saturdayType = mandatoryCount < CONFIG.CANTIDAD_SABADOS_OBLIGATORIOS ? "mandatory" : "voluntario";
-    item.record.saturdayClassification = "provisional";
-    mandatoryCount += item.record.saturdayType === "mandatory" ? 1 : 0;
-  }
+function ensureSaturdayClassifications() {
+  syncSaturdayClassifications(state);
 }
 
 function render() {
@@ -50,15 +33,16 @@ function render() {
 }
 
 function renderCalendarScreen() {
-  ensureSaturdayClassifications(view.year, view.month);
+  syncAllGenerated(state);
   save();
   const calendar = renderCalendar(state, view);
   const holidays = getHolidays(state, view.year);
   const today = isoDate(new Date());
-  const { totals } = calculateMonth(state, view.year, view.month);
+  const { start, end, totals } = calculateBillingCycle(state, new Date(view.year, view.month, 15));
   main.innerHTML = `${calendar}
     <section class="cl-card">
-      <h3>Resumen del mes</h3>
+      <h3>Resumen del ciclo de facturación</h3>
+      <div class="cl-muted cl-small">${start.toLocaleDateString("es-AR")} al ${end.toLocaleDateString("es-AR")}</div>
       <div class="cl-grid-3">
         <div class="cl-stat"><div class="value">${totals.jornales}</div><div class="label">Jornales</div></div>
         <div class="cl-stat"><div class="value">${formatHours(totals.extra50)}</div><div class="label">Extras 50 %</div></div>
@@ -329,12 +313,27 @@ function useFullForDay(dateKey) {
 function renderSummaryScreen() { main.innerHTML = renderSummary(state); }
 
 function renderLeavesScreen() {
+  syncAllGenerated(state);
+  save();
   const totals = leaveTotals(state);
   main.innerHTML = `
     <section class="cl-card"><h2>Control acumulativo</h2><div class="cl-muted cl-small">Se actualiza cada vez que se genera, usa o adeuda un franco.</div></section>
-    <section class="cl-card"><h3>Francos enteros</h3><div class="cl-grid-3"><div class="cl-stat"><div class="value">${totals.fullGenerated}</div><div class="label">Generados</div></div><div class="cl-stat"><div class="value">${totals.fullUsed}</div><div class="label">Usados</div></div><div class="cl-stat"><div class="value">${totals.fullAvailable}</div><div class="label">Disponibles</div></div></div><button class="cl-btn cl-btn-outline cl-btn-full" style="margin-top:10px" id="cl-list-full">Ver días generados</button></section>
-    <section class="cl-card"><h3>Medios francos</h3><div class="cl-grid-3"><div class="cl-stat"><div class="value">${totals.halfGenerated}</div><div class="label">Generados</div></div><div class="cl-stat"><div class="value">${totals.halfUsed}</div><div class="label">Usados</div></div><div class="cl-stat"><div class="value">${totals.halfAvailable}</div><div class="label">Disponibles</div></div></div><button class="cl-btn cl-btn-outline cl-btn-full" style="margin-top:10px" id="cl-list-half">Ver días generados</button></section>
-    <section class="cl-card"><h3>Adeudados</h3><div class="cl-grid-2"><div class="cl-stat"><div class="value">${totals.fullDebt}</div><div class="label">Francos adeudados</div></div><div class="cl-stat"><div class="value">${totals.halfDebt}</div><div class="label">Medios adeudados</div></div></div><div class="cl-action-grid" style="margin-top:10px"><button class="cl-btn cl-btn-outline" id="cl-list-debt-full">Ver francos</button><button class="cl-btn cl-btn-outline" id="cl-list-debt-half">Ver medios</button></div></section>`;
+    <section class="cl-card"><h3>Francos enteros</h3>
+      <div class="cl-grid-2">
+        <div class="cl-stat"><div class="value">${totals.fullAvailable}</div><div class="label">Disponibles</div></div>
+        <div class="cl-stat"><div class="value">${totals.fullDebt}</div><div class="label">Adeudados</div></div>
+      </div>
+      <button class="cl-btn cl-btn-outline cl-btn-full" style="margin-top:10px" id="cl-list-full">Ver días donde se generaron</button>
+      <button class="cl-btn cl-btn-secondary cl-btn-full" style="margin-top:8px" id="cl-list-debt-full">Ver francos adeudados</button>
+    </section>
+    <section class="cl-card"><h3>Medios francos</h3>
+      <div class="cl-grid-2">
+        <div class="cl-stat"><div class="value">${totals.halfAvailable}</div><div class="label">Disponibles</div></div>
+        <div class="cl-stat"><div class="value">${totals.halfDebt}</div><div class="label">Adeudados</div></div>
+      </div>
+      <button class="cl-btn cl-btn-outline cl-btn-full" style="margin-top:10px" id="cl-list-half">Ver días donde se generaron</button>
+      <button class="cl-btn cl-btn-secondary cl-btn-full" style="margin-top:8px" id="cl-list-debt-half">Ver medios adeudados</button>
+    </section>`;
 
   document.getElementById("cl-list-full").addEventListener("click", () => openLeaveList("Francos generados", state.leaves.fullGenerated, "franco"));
   document.getElementById("cl-list-half").addEventListener("click", () => openLeaveList("Medios francos generados", state.leaves.halfGenerated, "medio_franco"));
